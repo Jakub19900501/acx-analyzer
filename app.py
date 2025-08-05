@@ -1,11 +1,10 @@
-# Przygotowanie kompletnego kodu rozszerzonego analizatora Streamlit zgodnego z nazwą: app.py
 
-code = """
 import streamlit as st
 import pandas as pd
 import io
 import unicodedata
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="ACX Analyzer", layout="wide")
 st.title("📞 ACX Analyzer – porównanie baz (do 50 plików)")
@@ -31,7 +30,6 @@ if uploaded_files:
     df_all["LastTryTime"] = pd.to_datetime(df_all["LastTryTime"], errors="coerce")
     df_all["ImportCreatedOn"] = pd.to_datetime(df_all["ImportCreatedOn"], errors="coerce")
 
-    # Główna tabela porównania baz
     summary = df_all.groupby("Baza").agg({
         "Id": "count",
         "TotalTries": "sum",
@@ -66,7 +64,6 @@ if uploaded_files:
     summary["❌ % błędnych"] = round((summary["❌ Błędnych"] / summary["📋 Rekordów"]) * 100, 2)
     summary["⏳ Śr. czas reakcji (dni)"] = (summary["📅 Ostatni kontakt"] - summary["🕓 Data importu"]).dt.days
 
-    # ALERT
     def alert(row):
         if row["💯 L100R"] >= 0.20:
             return "🟢 Baza dobra"
@@ -76,7 +73,6 @@ if uploaded_files:
             return "🔴 Baza martwa"
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
-    # Tabela ponownych kontaktów
     ponowne = df_all[df_all["PonownyKontakt"] == True].copy()
     ponowna_analiza = ponowne.groupby("Baza").agg({
         "Id": "count",
@@ -92,14 +88,23 @@ if uploaded_files:
     ponowna_analiza["💯 L100R"] = round((ponowna_analiza["✅ Skuteczne"] / ponowna_analiza["🔁 Rekordów ponownych"]) * 100, 2)
     ponowna_analiza["📉 CTR"] = round(ponowna_analiza["📞 Połączeń"] / ponowna_analiza["✅ Skuteczne"].replace(0, 1), 2)
 
-    # Streamlit display
     st.subheader("📊 Porównanie baz – rozszerzone")
     st.dataframe(summary, use_container_width=True)
+
+    st.subheader("📈 Wykresy skuteczności baz")
+    chart_cols = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "❌ % błędnych"]
+    for col in chart_cols:
+        fig, ax = plt.subplots()
+        summary_sorted = summary.sort_values(col, ascending=False)
+        ax.bar(summary_sorted["📁 Baza"], summary_sorted[col], color="skyblue")
+        ax.set_title(col)
+        ax.set_ylabel(col)
+        ax.set_xticklabels(summary_sorted["📁 Baza"], rotation=90)
+        st.pyplot(fig)
 
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
 
-    # Excel export
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         summary.to_excel(writer, index=False, sheet_name="Porównanie baz")
@@ -113,9 +118,3 @@ if uploaded_files:
         ws2.write(len(ponowna_analiza)+2, 0, "📌 LEGENDA", bold)
 
     st.download_button("⬇️ Pobierz raport Excel", data=buffer.getvalue(), file_name="Raport_Porownanie_Baz_ACX.xlsx", mime="application/vnd.ms-excel")
-"""
-
-with open("/mnt/data/app.py", "w") as f:
-    f.write(code)
-
-"/mnt/data/app.py"
