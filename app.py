@@ -74,6 +74,18 @@ if uploaded_files:
 
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
+    # Sortowanie po jakości alertu od 🟣 do ⚫
+    alert_order = [
+        "🟣 Baza genialna",
+        "🟢 Baza bardzo dobra",
+        "🟡 Baza solidna",
+        "🟠 Baza przeciętna",
+        "🔴 Baza słaba",
+        "⚫ Baza martwa"
+    ]
+    summary["🚨 Alert"] = pd.Categorical(summary["🚨 Alert"], categories=alert_order, ordered=True)
+    summary = summary.sort_values("🚨 Alert")
+
     metryki_kolejnosc = [
         "📁 Baza", "💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
         "📋 Rekordów", "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
@@ -82,7 +94,6 @@ if uploaded_files:
     ]
     summary = summary[[col for col in metryki_kolejnosc if col in summary.columns]]
 
-    # Tabela ponownych kontaktów
     ponowne = df_all[df_all["PonownyKontakt"] == True].copy()
     ponowna_analiza = ponowne.groupby("Baza").agg({
         "Id": "count",
@@ -122,7 +133,6 @@ if uploaded_files:
         for i, col in enumerate(ponowna_analiza.columns):
             ws_ponowny.set_column(i, i, 22)
 
-        # Wykresy
         chart_sheet = wb.add_worksheet("Wykresy")
         metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
@@ -138,7 +148,6 @@ if uploaded_files:
             chart.set_size({'width': 1440, 'height': 480})
             chart_sheet.insert_chart(i * 25, 0, chart)
 
-        # Legenda metryk i alertów
         legenda = [
             ("💯 L100R", "Spotkania na 100 rekordów"),
             ("📉 CTR", "Połączenia / spotkania"),
