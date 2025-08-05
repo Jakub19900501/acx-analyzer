@@ -16,7 +16,8 @@ if uploaded_files:
         file_name = file.name.replace(".xlsx", "")
         df = pd.read_excel(file)
 
-        df['Skuteczny'] = df['CloseReason'].fillna('').str.lower().str.contains('umówione|potwierdzone')
+        # ✅ POPRAWKA – teraz analizujemy LastCallCode
+        df['Skuteczny'] = df['LastCallCode'].fillna('').str.lower().str.contains('umówione|potwierdzone')
         df['Błędny numer'] = df['CloseReason'].fillna('').str.lower().str.contains('brak dostępnych telefonów|błędny numer')
         df['Połączony'] = df['CloseReason'].fillna('').str.lower().str.contains('połączony')
         df['Próby'] = df['Tries'].fillna(0)
