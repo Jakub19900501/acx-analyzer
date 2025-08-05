@@ -135,4 +135,4 @@ if uploaded_files:
             worksheet.write(start_row, 0, label, bold)
             worksheet.write(start_row, 1, desc)
 
-    st.download_button("⬇️ Pobierz Excel", data=buffer.getvalue(), file_name="Raport_ACX_V3.xlsx", mime="application/vnd.ms-excel")
+    st.download_button("⬇️ Pobierz Excel", data=buffer.getvalue(), file_name="Raport_ACX_V3.xlsx", mime="application/vnd.ms-excel") 
