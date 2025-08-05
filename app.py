@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import io
 import unicodedata
+import re
 
 st.set_page_config(page_title="ACX Analyzer V2", layout="wide")
 st.title("📞 ACX Analyzer V2 – porównanie baz kontaktowych")
@@ -13,19 +14,28 @@ if uploaded_files:
     summary_rows = []
     city_counts = pd.DataFrame()
 
+    # 🔍 Lista słów uznawanych za sukces
+    success_keywords = [
+        "umow", "umowienie", "umowione", "umowic", "umowiono", "umowilem", "umowila", 
+        "umowimy", "spotkanie", "spotkanie potwierdzone", "sukces", "sukcesem", "magazyn"
+    ]
+
+    pattern = "|".join(success_keywords)
+
     for file in uploaded_files:
         file_name = file.name.replace(".xlsx", "")
         df = pd.read_excel(file)
 
-        # ✅ Naprawa: Normalizacja i odporność
+        # ✅ Normalizacja LastCallCode
         if 'LastCallCode' in df.columns:
             lastcall_clean = df['LastCallCode'].astype(str).str.lower().apply(
                 lambda x: unicodedata.normalize('NFKD', x).encode('ascii', errors='ignore').decode('utf-8')
             )
-            df['Skuteczny'] = lastcall_clean.str.contains('umowione|potwierdzone')
+            df['Skuteczny'] = lastcall_clean.str.contains(pattern, regex=True)
         else:
             df['Skuteczny'] = False
 
+        # Pozostałe kolumny
         df['Błędny numer'] = df['CloseReason'].fillna('').str.lower().str.contains('brak dostępnych telefonów|błędny numer')
         df['Połączony'] = df['CloseReason'].fillna('').str.lower().str.contains('połączony')
         df['Próby'] = df['Tries'].fillna(0)
@@ -50,23 +60,25 @@ if uploaded_files:
             "💯 L100R": l100r
         })
 
-        # Miejscowości (do wykresów)
+        # Miejscowości do wykresów
         if 'Miejscowosc' in df.columns:
             count_df = df['Miejscowosc'].value_counts().head(10).reset_index()
             count_df.columns = ['Miasto', 'Liczba kontaktów']
             count_df['Baza'] = file_name
             city_counts = pd.concat([city_counts, count_df], ignore_index=True)
 
+    # 🧾 Tabela podsumowania
     summary_df = pd.DataFrame(summary_rows).sort_values(by="💯 L100R", ascending=False)
     st.subheader("📊 Porównanie skuteczności baz")
     st.dataframe(summary_df, use_container_width=True)
 
+    # 📈 Wykres miejscowości
     st.subheader("📍 Wykres: TOP 10 miejscowości wg kontaktów (sumarycznie)")
     if not city_counts.empty:
         fig = px.bar(city_counts, x="Miasto", y="Liczba kontaktów", color="Baza", barmode="group")
         st.plotly_chart(fig, use_container_width=True)
 
-    # 📥 Export raportu
+    # 📤 Eksport raportu
     st.subheader("📥 Generuj raport Excel")
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
@@ -80,4 +92,5 @@ if uploaded_files:
     - **L100R** – leady na 100 rekordów
     - **Śr. prób** – średnia liczba prób na rekord
     - **% błędnych** – procent rekordów z błędnym numerem
+    - **✅ Spotkania** – rozpoznawane po słowach: `umówienie`, `umówione`, `umówimy`, `sukces`, `spotkanie`, `magazyn` itp.
     """)
