@@ -3,7 +3,6 @@ import pandas as pd
 import io
 import unicodedata
 from datetime import datetime
-import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="ACX Analyzer", layout="wide")
 st.title("📞 ACX Analyzer – porównanie baz (do 50 plików)")
@@ -14,6 +13,8 @@ def normalize_text(text):
     return unicodedata.normalize("NFKD", str(text).lower()).encode("ascii", errors="ignore").decode("utf-8")
 
 if uploaded_files:
+    import xlsxwriter
+
     all_data = []
     for file in uploaded_files[:50]:
         df = pd.read_excel(file)
@@ -89,7 +90,6 @@ if uploaded_files:
 
     st.subheader("📊 Porównanie baz – rozszerzone")
     st.dataframe(summary, use_container_width=True)
-
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
 
@@ -98,12 +98,20 @@ if uploaded_files:
         summary.to_excel(writer, index=False, sheet_name="Porównanie baz")
         ponowna_analiza.to_excel(writer, index=False, sheet_name="Ponowny kontakt")
 
-        chart_sheet = writer.book.add_worksheet("Wykresy")
-        chart_sheet.write(0, 0, "📊 Wykresy porównawcze (L100R, CTR, błędy, ponowny kontakt)")
+        wb = writer.book
+        ws_summary = writer.sheets["Porównanie baz"]
+        ws_ponowny = writer.sheets["Ponowny kontakt"]
 
+        for i, col in enumerate(summary.columns):
+            ws_summary.set_column(i, i, 20)
+        for i, col in enumerate(ponowna_analiza.columns):
+            ws_ponowny.set_column(i, i, 20)
+
+        # Wstaw wykresy
+        chart_sheet = wb.add_worksheet("Wykresy")
         metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "❌ % błędnych"]
         for i, metric in enumerate(metrics):
-            chart = writer.book.add_chart({'type': 'column'})
+            chart = wb.add_chart({'type': 'column'})
             chart.add_series({
                 'name': metric,
                 'categories': ['Porównanie baz', 1, 0, len(summary), 0],
@@ -112,28 +120,27 @@ if uploaded_files:
             chart.set_title({'name': metric})
             chart.set_x_axis({'name': 'Baza'})
             chart.set_y_axis({'name': metric})
-            chart_sheet.insert_chart(i * 15 + 2, 0, chart)
+            chart.set_size({'width': 1440, 'height': 480})  # A–T + 23 wiersze
+            chart_sheet.insert_chart(i * 25, 0, chart)
 
-        # Legenda
+        # Legenda dla obu arkuszy
         legend = [
             ("📋 Rekordów", "Liczba rekordów w bazie"),
             ("📞 Połączeń", "Łączna liczba prób kontaktu"),
             ("✅ Spotkań", "Ile razy zakończono sukcesem"),
-            ("❌ Rekordy z błędem", "Rekordy z błędnym numerem lub rozłączeniem"),
+            ("❌ Rekordy z błędem", "Błędny numer, rozłączenie"),
             ("💯 L100R", "Spotkania na 100 rekordów"),
-            ("📉 CTR", "Próby na 1 spotkanie"),
+            ("📉 CTR", "Połączenia / spotkania"),
             ("🔁 % Ponowny kontakt", "Odsetek ponownych prób"),
-            ("🔁 Śr. prób", "Średnia liczba prób per rekord"),
-            ("⏳ Śr. czas reakcji", "Czas od importu do kontaktu"),
-            ("🧱 Top odmowy", "3 najczęstsze powody odmowy"),
+            ("🔁 Śr. prób", "Średnia liczba prób / rekord"),
+            ("⏳ Śr. czas reakcji", "Dni od importu do kontaktu"),
+            ("🧱 Top odmowy", "3 najczęstsze powody odmowy")
         ]
-        ws = writer.sheets["Porównanie baz"]
-        for i, col in enumerate(summary.columns):
-            ws.set_column(i, i, max(15, len(str(col)) + 2))
-        start = len(summary) + 4
-        ws.write(start, 0, "📌 LEGENDA METRYK")
-        for idx, (label, desc) in enumerate(legend, start + 1):
-            ws.write(idx, 0, label)
-            ws.write(idx, 1, desc)
+
+        for start_row, ws in [(len(summary) + 4, ws_summary), (len(ponowna_analiza) + 4, ws_ponowny)]:
+            ws.write(start_row, 0, "📌 LEGENDA METRYK")
+            for idx, (label, desc) in enumerate(legend, start=start_row + 1):
+                ws.write(idx, 0, label)
+                ws.write(idx, 1, desc)
 
     st.download_button("⬇️ Pobierz raport Excel", data=buffer.getvalue(), file_name="Raport_Porownanie_Baz_ACX.xlsx", mime="application/vnd.ms-excel")
