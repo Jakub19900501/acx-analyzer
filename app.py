@@ -39,7 +39,6 @@ if uploaded_files:
         "LastTryTime": "max",
         "ImportCreatedOn": "min"
     }).reset_index()
-
     summary.rename(columns={
         "Baza": "📁 Baza",
         "Id": "📋 Rekordów",
@@ -71,13 +70,15 @@ if uploaded_files:
             return "🔴 Baza słaba"
         else:
             return "⚫ Baza martwa"
+
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
-    # Ustawienie kolejności kolumn
+    # Przestawienie kolumn – metryki L100R itd. na początek
     metryki_kolejnosc = [
         "📁 Baza", "💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
         "📋 Rekordów", "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
-        "❌ Rekordy z błędem", "📅 Ostatni kontakt", "🕓 Data importu", "⏳ Śr. czas reakcji (dni)", "🚨 Alert"
+        "❌ Rekordy z błędem", "📅 Ostatni kontakt", "🕓 Data importu",
+        "⏳ Śr. czas reakcji (dni)", "🚨 Alert"
     ]
     summary = summary[[col for col in metryki_kolejnosc if col in summary.columns]]
 
@@ -88,12 +89,14 @@ if uploaded_files:
         "Skuteczny": "sum",
         "TotalTries": "sum"
     }).reset_index()
+
     ponowna_analiza.rename(columns={
         "Baza": "📁 Baza",
         "Id": "🔁 Rekordów ponownych",
         "Skuteczny": "✅ Skuteczne",
         "TotalTries": "📞 Połączeń"
     }, inplace=True)
+
     ponowna_analiza["💯 L100R"] = round((ponowna_analiza["✅ Skuteczne"] / ponowna_analiza["🔁 Rekordów ponownych"]) * 100, 2)
     ponowna_analiza["📉 CTR"] = round(ponowna_analiza["📞 Połączeń"] / ponowna_analiza["✅ Skuteczne"].replace(0, 1), 2)
 
@@ -101,7 +104,6 @@ if uploaded_files:
     st.dataframe(summary, use_container_width=True)
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
-
     # Eksport
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
@@ -112,12 +114,17 @@ if uploaded_files:
         ws_summary = writer.sheets["Porównanie baz"]
         ws_ponowny = writer.sheets["Ponowny kontakt"]
 
+        # 📌 Freeze nagłówków + metryk (F = kolumna 5)
+        ws_summary.freeze_panes(1, 5)
+        ws_ponowny.freeze_panes(1, 0)
+
+        # Kolumny stałej szerokości
         for i, col in enumerate(summary.columns):
             ws_summary.set_column(i, i, 22)
         for i, col in enumerate(ponowna_analiza.columns):
             ws_ponowny.set_column(i, i, 22)
 
-        # Wykresy
+        # 📈 Wykresy
         chart_sheet = wb.add_worksheet("Wykresy")
         metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
@@ -130,10 +137,10 @@ if uploaded_files:
             chart.set_title({'name': metric})
             chart.set_x_axis({'name': 'Baza'})
             chart.set_y_axis({'name': metric})
-            chart.set_size({'width': 1440, 'height': 480})
+            chart.set_size({'width': 1440, 'height': 480})  # A–T, 23 wiersze
             chart_sheet.insert_chart(i * 25, 0, chart)
 
-        # Legenda
+        # 📌 Legenda – 3x (Porównanie baz, Ponowny kontakt, Wykresy)
         legenda = [
             ("💯 L100R", "Spotkania na 100 rekordów"),
             ("📉 CTR", "Połączenia / spotkania"),
@@ -145,13 +152,23 @@ if uploaded_files:
             ("❌ Rekordy z błędem", "Rozłączone / błędny numer"),
             ("📅 Ostatni kontakt", "Data ostatniego kontaktu"),
             ("⏳ Śr. czas reakcji (dni)", "Import → Kontakt"),
-            ("🚨 Alert", "Ocena bazy wg L100R")
+            ("🚨 Alert", "Ocena bazy wg L100R (🟣 do ⚫)")
         ]
 
-        for ws, start in [(ws_summary, len(summary) + 4), (ws_ponowny, len(ponowna_analiza) + 4), (chart_sheet, 102)]:
+        for ws, start in [
+            (ws_summary, len(summary) + 4),
+            (ws_ponowny, len(ponowna_analiza) + 4),
+            (chart_sheet, 102)
+        ]:
             ws.write(start, 0, "📌 LEGENDA METRYK")
             for idx, (label, desc) in enumerate(legenda, start + 1):
                 ws.write(idx, 0, label)
                 ws.write(idx, 1, desc)
 
-    st.download_button("⬇️ Pobierz raport Excel", data=buffer.getvalue(), file_name="Raport_Porownanie_Baz_ACX.xlsx", mime="application/vnd.ms-excel")
+    st.download_button(
+        "⬇️ Pobierz raport Excel",
+        data=buffer.getvalue(),
+        file_name="Raport_Porownanie_Baz_ACX.xlsx",
+        mime="application/vnd.ms-excel"
+    )
+
