@@ -39,6 +39,7 @@ if uploaded_files:
         "LastTryTime": "max",
         "ImportCreatedOn": "min"
     }).reset_index()
+
     summary.rename(columns={
         "Baza": "📁 Baza",
         "Id": "📋 Rekordów",
@@ -73,7 +74,6 @@ if uploaded_files:
 
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
-    # Przestawienie kolumn – metryki L100R itd. na początek
     metryki_kolejnosc = [
         "📁 Baza", "💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
         "📋 Rekordów", "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
@@ -104,7 +104,7 @@ if uploaded_files:
     st.dataframe(summary, use_container_width=True)
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
-    # Eksport
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         summary.to_excel(writer, index=False, sheet_name="Porównanie baz")
@@ -114,17 +114,15 @@ if uploaded_files:
         ws_summary = writer.sheets["Porównanie baz"]
         ws_ponowny = writer.sheets["Ponowny kontakt"]
 
-        # 📌 Freeze nagłówków + metryk (F = kolumna 5)
         ws_summary.freeze_panes(1, 5)
         ws_ponowny.freeze_panes(1, 0)
 
-        # Kolumny stałej szerokości
         for i, col in enumerate(summary.columns):
             ws_summary.set_column(i, i, 22)
         for i, col in enumerate(ponowna_analiza.columns):
             ws_ponowny.set_column(i, i, 22)
 
-        # 📈 Wykresy
+        # Wykresy
         chart_sheet = wb.add_worksheet("Wykresy")
         metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
@@ -137,10 +135,10 @@ if uploaded_files:
             chart.set_title({'name': metric})
             chart.set_x_axis({'name': 'Baza'})
             chart.set_y_axis({'name': metric})
-            chart.set_size({'width': 1440, 'height': 480})  # A–T, 23 wiersze
+            chart.set_size({'width': 1440, 'height': 480})
             chart_sheet.insert_chart(i * 25, 0, chart)
 
-        # 📌 Legenda – 3x (Porównanie baz, Ponowny kontakt, Wykresy)
+        # Legenda metryk i alertów
         legenda = [
             ("💯 L100R", "Spotkania na 100 rekordów"),
             ("📉 CTR", "Połączenia / spotkania"),
@@ -165,10 +163,17 @@ if uploaded_files:
                 ws.write(idx, 0, label)
                 ws.write(idx, 1, desc)
 
+            ws.write(start, 3, "🚨 Alert — jakość bazy wg L100R:")
+            ws.write(start + 1, 3, "🟣 ≥ 1.00");      ws.write(start + 1, 4, "Baza genialna")
+            ws.write(start + 2, 3, "🟢 0.57–0.99");   ws.write(start + 2, 4, "Baza bardzo dobra")
+            ws.write(start + 3, 3, "🟡 0.32–0.56");   ws.write(start + 3, 4, "Baza solidna")
+            ws.write(start + 4, 3, "🟠 0.23–0.31");   ws.write(start + 4, 4, "Baza przeciętna")
+            ws.write(start + 5, 3, "🔴 0.10–0.22");   ws.write(start + 5, 4, "Baza słaba")
+            ws.write(start + 6, 3, "⚫ < 0.10");       ws.write(start + 6, 4, "Baza martwa")
+
     st.download_button(
         "⬇️ Pobierz raport Excel",
         data=buffer.getvalue(),
         file_name="Raport_Porownanie_Baz_ACX.xlsx",
         mime="application/vnd.ms-excel"
     )
-
