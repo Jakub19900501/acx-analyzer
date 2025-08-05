@@ -37,10 +37,7 @@ if uploaded_files:
         "PonownyKontakt": "sum",
         "Bledny": "sum",
         "LastTryTime": "max",
-        "LastTryUser": lambda x: ", ".join(set(x.dropna().astype(str))),
-        "RejectReason": lambda x: ", ".join(x.dropna().astype(str).value_counts().head(3).index),
-        "ImportCreatedOn": "min",
-        "CampaignRecordPhoneIndex": lambda x: ", ".join(set(x.dropna().astype(str))) if set(x.dropna().astype(str)) != {"Nr_telefonu"} else ""
+        "ImportCreatedOn": "min"
     }).reset_index()
 
     summary.rename(columns={
@@ -51,28 +48,40 @@ if uploaded_files:
         "PonownyKontakt": "🔁 Ponowny kontakt",
         "Bledny": "❌ Rekordy z błędem",
         "LastTryTime": "📅 Ostatni kontakt",
-        "LastTryUser": "👤 Konsultanci",
-        "RejectReason": "🧱 Top odmowy",
-        "ImportCreatedOn": "🕓 Data importu",
-        "CampaignRecordPhoneIndex": "🧭 Regiony"
+        "ImportCreatedOn": "🕓 Data importu"
     }, inplace=True)
 
     summary["💯 L100R"] = round((summary["✅ Spotkań"] / summary["📋 Rekordów"]) * 100, 2)
     summary["📉 CTR"] = round(summary["📞 Połączeń"] / summary["✅ Spotkań"].replace(0, 1), 2)
     summary["🔁 % Ponowny kontakt"] = round((summary["🔁 Ponowny kontakt"] / summary["📋 Rekordów"]) * 100, 2)
     summary["🔁 Śr. prób"] = round(summary["📞 Połączeń"] / summary["📋 Rekordów"].replace(0, 1), 2)
-    summary["❌ % błędnych"] = round((summary["❌ Rekordy z błędem"] / summary["📋 Rekordów"]) * 100, 2)
     summary["⏳ Śr. czas reakcji (dni)"] = (summary["📅 Ostatni kontakt"] - summary["🕓 Data importu"]).dt.days
 
     def alert(row):
-        if row["💯 L100R"] >= 0.20:
-            return "🟢 Baza dobra"
-        elif row["💯 L100R"] >= 0.10:
-            return "🟡 Do obserwacji"
+        l100r = row["💯 L100R"]
+        if l100r >= 1.0:
+            return "🟣 Baza genialna"
+        elif l100r >= 0.57:
+            return "🟢 Baza bardzo dobra"
+        elif l100r >= 0.32:
+            return "🟡 Baza solidna"
+        elif l100r >= 0.23:
+            return "🟠 Baza przeciętna"
+        elif l100r >= 0.10:
+            return "🔴 Baza słaba"
         else:
-            return "🔴 Baza martwa"
+            return "⚫ Baza martwa"
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
+    # Ustawienie kolejności kolumn
+    metryki_kolejnosc = [
+        "📁 Baza", "💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
+        "📋 Rekordów", "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
+        "❌ Rekordy z błędem", "📅 Ostatni kontakt", "🕓 Data importu", "⏳ Śr. czas reakcji (dni)", "🚨 Alert"
+    ]
+    summary = summary[[col for col in metryki_kolejnosc if col in summary.columns]]
+
+    # Tabela ponownych kontaktów
     ponowne = df_all[df_all["PonownyKontakt"] == True].copy()
     ponowna_analiza = ponowne.groupby("Baza").agg({
         "Id": "count",
@@ -93,6 +102,7 @@ if uploaded_files:
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
 
+    # Eksport
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         summary.to_excel(writer, index=False, sheet_name="Porównanie baz")
@@ -103,13 +113,13 @@ if uploaded_files:
         ws_ponowny = writer.sheets["Ponowny kontakt"]
 
         for i, col in enumerate(summary.columns):
-            ws_summary.set_column(i, i, 20)
+            ws_summary.set_column(i, i, 22)
         for i, col in enumerate(ponowna_analiza.columns):
-            ws_ponowny.set_column(i, i, 20)
+            ws_ponowny.set_column(i, i, 22)
 
-        # Wstaw wykresy
+        # Wykresy
         chart_sheet = wb.add_worksheet("Wykresy")
-        metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "❌ % błędnych"]
+        metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
             chart = wb.add_chart({'type': 'column'})
             chart.add_series({
@@ -120,26 +130,27 @@ if uploaded_files:
             chart.set_title({'name': metric})
             chart.set_x_axis({'name': 'Baza'})
             chart.set_y_axis({'name': metric})
-            chart.set_size({'width': 1440, 'height': 480})  # A–T + 23 wiersze
+            chart.set_size({'width': 1440, 'height': 480})
             chart_sheet.insert_chart(i * 25, 0, chart)
 
-        # Legenda dla obu arkuszy
-        legend = [
-            ("📋 Rekordów", "Liczba rekordów w bazie"),
-            ("📞 Połączeń", "Łączna liczba prób kontaktu"),
-            ("✅ Spotkań", "Ile razy zakończono sukcesem"),
-            ("❌ Rekordy z błędem", "Błędny numer, rozłączenie"),
+        # Legenda
+        legenda = [
             ("💯 L100R", "Spotkania na 100 rekordów"),
             ("📉 CTR", "Połączenia / spotkania"),
             ("🔁 % Ponowny kontakt", "Odsetek ponownych prób"),
-            ("🔁 Śr. prób", "Średnia liczba prób / rekord"),
-            ("⏳ Śr. czas reakcji", "Dni od importu do kontaktu"),
-            ("🧱 Top odmowy", "3 najczęstsze powody odmowy")
+            ("🔁 Śr. prób", "Średnia prób per rekord"),
+            ("📋 Rekordów", "Liczba rekordów"),
+            ("📞 Połączeń", "Łączna liczba prób kontaktu"),
+            ("✅ Spotkań", "Zakończone sukcesem"),
+            ("❌ Rekordy z błędem", "Rozłączone / błędny numer"),
+            ("📅 Ostatni kontakt", "Data ostatniego kontaktu"),
+            ("⏳ Śr. czas reakcji (dni)", "Import → Kontakt"),
+            ("🚨 Alert", "Ocena bazy wg L100R")
         ]
 
-        for start_row, ws in [(len(summary) + 4, ws_summary), (len(ponowna_analiza) + 4, ws_ponowny)]:
-            ws.write(start_row, 0, "📌 LEGENDA METRYK")
-            for idx, (label, desc) in enumerate(legend, start=start_row + 1):
+        for ws, start in [(ws_summary, len(summary) + 4), (ws_ponowny, len(ponowna_analiza) + 4), (chart_sheet, 102)]:
+            ws.write(start, 0, "📌 LEGENDA METRYK")
+            for idx, (label, desc) in enumerate(legenda, start + 1):
                 ws.write(idx, 0, label)
                 ws.write(idx, 1, desc)
 
