@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import io
+import unicodedata
 
 st.set_page_config(page_title="ACX Analyzer V2", layout="wide")
 st.title("📞 ACX Analyzer V2 – porównanie baz kontaktowych")
@@ -16,8 +17,15 @@ if uploaded_files:
         file_name = file.name.replace(".xlsx", "")
         df = pd.read_excel(file)
 
-        # ✅ POPRAWKA – teraz analizujemy LastCallCode
-        df['Skuteczny'] = df['LastCallCode'].fillna('').str.lower().str.contains('umówione|potwierdzone')
+        # ✅ Naprawa: Normalizacja i odporność
+        if 'LastCallCode' in df.columns:
+            lastcall_clean = df['LastCallCode'].astype(str).str.lower().apply(
+                lambda x: unicodedata.normalize('NFKD', x).encode('ascii', errors='ignore').decode('utf-8')
+            )
+            df['Skuteczny'] = lastcall_clean.str.contains('umowione|potwierdzone')
+        else:
+            df['Skuteczny'] = False
+
         df['Błędny numer'] = df['CloseReason'].fillna('').str.lower().str.contains('brak dostępnych telefonów|błędny numer')
         df['Połączony'] = df['CloseReason'].fillna('').str.lower().str.contains('połączony')
         df['Próby'] = df['Tries'].fillna(0)
