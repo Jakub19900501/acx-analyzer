@@ -74,7 +74,6 @@ if uploaded_files:
 
     summary["🚨 Alert"] = summary.apply(alert, axis=1)
 
-    # Sortowanie po jakości alertu od 🟣 do ⚫
     alert_order = [
         "🟣 Baza genialna",
         "🟢 Baza bardzo dobra",
@@ -94,22 +93,30 @@ if uploaded_files:
     ]
     summary = summary[[col for col in metryki_kolejnosc if col in summary.columns]]
 
-    ponowne = df_all[df_all["PonownyKontakt"] == True].copy()
-    ponowna_analiza = ponowne.groupby("Baza").agg({
-        "Id": "count",
-        "Skuteczny": "sum",
-        "TotalTries": "sum"
-    }).reset_index()
+    # ✅ NOWA ANALIZA PONOWNYCH KONTAKTÓW PER BAZA
+    ponowne = df_all[df_all["TotalTries"] > 1].copy()
+    ponowne["LastCallCode_clean"] = ponowne["LastCallCode"].astype(str).apply(normalize_text)
+    ponowne["Skuteczne"] = ponowne["LastCallCode_clean"].str.contains("umowienie")
+    ponowne_umowienia = ponowne[ponowne["Skuteczne"] == True]
 
-    ponowna_analiza.rename(columns={
-        "Baza": "📁 Baza",
-        "Id": "🔁 Rekordów ponownych",
-        "Skuteczny": "✅ Skuteczne",
-        "TotalTries": "📞 Połączeń"
-    }, inplace=True)
+    ponowny_raport = []
+    for baza in ponowne_umowienia["Baza"].unique():
+        baza_df = ponowne_umowienia[ponowne_umowienia["Baza"] == baza]
+        rozklad = baza_df["TotalTries"].value_counts().sort_index()
+        suma = len(baza_df)
+        sr = baza_df["TotalTries"].mean()
+        med = baza_df["TotalTries"].median()
+        rozklad_str = ", ".join([f"{int(k)}: {v}" for k, v in rozklad.items()])
+        ponowny_raport.append({
+            "📁 Baza": baza,
+            "🔁 Rekordów ponownych": len(ponowne[ponowne["Baza"] == baza]),
+            "✅ Umówienia": suma,
+            "📈 Śr. próba": round(sr, 2),
+            "🎯 Mediana": round(med, 2),
+            "📊 Rozkład prób": rozklad_str
+        })
 
-    ponowna_analiza["💯 L100R"] = round((ponowna_analiza["✅ Skuteczne"] / ponowna_analiza["🔁 Rekordów ponownych"]) * 100, 2)
-    ponowna_analiza["📉 CTR"] = round(ponowna_analiza["📞 Połączeń"] / ponowna_analiza["✅ Skuteczne"].replace(0, 1), 2)
+    ponowna_analiza = pd.DataFrame(ponowny_raport)
 
     st.subheader("📊 Porównanie baz – rozszerzone")
     st.dataframe(summary, use_container_width=True)
@@ -131,8 +138,9 @@ if uploaded_files:
         for i, col in enumerate(summary.columns):
             ws_summary.set_column(i, i, 22)
         for i, col in enumerate(ponowna_analiza.columns):
-            ws_ponowny.set_column(i, i, 22)
+            ws_ponowny.set_column(i, i, 28)
 
+        # Dodanie wykresów i legendy
         chart_sheet = wb.add_worksheet("Wykresy")
         metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
