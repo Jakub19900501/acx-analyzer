@@ -12,6 +12,34 @@ uploaded_files = st.file_uploader("📤 Wgraj pliki ACX (.xlsx)", type=["xlsx"],
 def normalize_text(text):
     return unicodedata.normalize("NFKD", str(text).lower()).encode("ascii", errors="ignore").decode("utf-8")
 
+def klasyfikuj_alert_ctr(ctr_val):
+    if ctr_val is None:
+        return "Brak danych"
+    elif ctr_val < 150:
+        return "🟣 Genialna"
+    elif ctr_val < 300:
+        return "🟢 Bardzo dobra"
+    elif ctr_val < 500:
+        return "🟡 Solidna"
+    elif ctr_val < 700:
+        return "🟠 Przeciętna"
+    elif ctr_val < 1000:
+        return "🔴 Słaba"
+    else:
+        return "⚫ Martwa"
+
+def generuj_wniosek_ctr_roe(ctr_val, roe_val, umowienia):
+    if ctr_val is None or umowienia == 0:
+        return "❌ Brak umówień – baza prawdopodobnie martwa."
+    elif ctr_val >= 1000:
+        return "⚠️ CTR ≥ 1000 – baza wypalona. Zalecane wycofanie lub filtrowanie."
+    elif roe_val > 5:
+        return "✅ ROE > 5% – baza bardzo efektywna. Warto kontynuować."
+    elif ctr_val < 300:
+        return "👍 CTR < 300 – kaloryczna baza, szybkie efekty."
+    else:
+        return ""
+
 if uploaded_files:
     import xlsxwriter
 
@@ -53,49 +81,27 @@ if uploaded_files:
 
     summary["💯 L100R"] = round((summary["✅ Spotkań"] / summary["📋 Rekordów"]) * 100, 2)
     summary["📉 CTR"] = round(summary["📞 Połączeń"] / summary["✅ Spotkań"].replace(0, 1), 2)
+    summary["ROE (%)"] = round((summary["✅ Spotkań"] / summary["📞 Połączeń"]) * 100, 2)
     summary["🔁 % Ponowny kontakt"] = round((summary["🔁 Ponowny kontakt"] / summary["📋 Rekordów"]) * 100, 2)
     summary["🔁 Śr. prób"] = round(summary["📞 Połączeń"] / summary["📋 Rekordów"].replace(0, 1), 2)
     summary["⏳ Śr. czas reakcji (dni)"] = (summary["📅 Ostatni kontakt"] - summary["🕓 Data importu"]).dt.days
+    summary["🚨 Alert CTR"] = summary["📉 CTR"].apply(klasyfikuj_alert_ctr)
+    summary["📝 Wniosek"] = summary.apply(
+        lambda row: generuj_wniosek_ctr_roe(row["📉 CTR"], row["ROE (%)"], row["✅ Spotkań"]), axis=1
+    )
 
-    def alert(row):
-        l100r = row["💯 L100R"]
-        if l100r >= 1.0:
-            return "🟣 Baza genialna"
-        elif l100r >= 0.57:
-            return "🟢 Baza bardzo dobra"
-        elif l100r >= 0.32:
-            return "🟡 Baza solidna"
-        elif l100r >= 0.23:
-            return "🟠 Baza przeciętna"
-        elif l100r >= 0.10:
-            return "🔴 Baza słaba"
-        else:
-            return "⚫ Baza martwa"
-
-    summary["🚨 Alert"] = summary.apply(alert, axis=1)
-
-    alert_order = [
-        "🟣 Baza genialna",
-        "🟢 Baza bardzo dobra",
-        "🟡 Baza solidna",
-        "🟠 Baza przeciętna",
-        "🔴 Baza słaba",
-        "⚫ Baza martwa"
-    ]
-    summary["🚨 Alert"] = pd.Categorical(summary["🚨 Alert"], categories=alert_order, ordered=True)
-    summary = summary.sort_values("🚨 Alert")
+    summary = summary.sort_values("📉 CTR")
 
     metryki_kolejnosc = [
-        "📁 Baza", "💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
+        "📁 Baza", "💯 L100R", "📉 CTR", "ROE (%)", "🔁 % Ponowny kontakt", "🔁 Śr. prób",
         "📋 Rekordów", "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
         "❌ Rekordy z błędem", "📅 Ostatni kontakt", "🕓 Data importu",
-        "⏳ Śr. czas reakcji (dni)", "🚨 Alert"
+        "⏳ Śr. czas reakcji (dni)", "🚨 Alert CTR", "📝 Wniosek"
     ]
     summary = summary[[col for col in metryki_kolejnosc if col in summary.columns]]
 
-    # ✅ NOWA ANALIZA PONOWNYCH KONTAKTÓW PER BAZA
+    # 🔁 ANALIZA PONOWNYCH KONTAKTÓW
     ponowne = df_all[df_all["TotalTries"] > 1].copy()
-    ponowne["LastCallCode_clean"] = ponowne["LastCallCode"].astype(str).apply(normalize_text)
     ponowne["Skuteczne"] = ponowne["LastCallCode_clean"].str.contains("umowienie")
     ponowne_umowienia = ponowne[ponowne["Skuteczne"] == True]
 
@@ -118,11 +124,13 @@ if uploaded_files:
 
     ponowna_analiza = pd.DataFrame(ponowny_raport)
 
+    # 📊 WYŚWIETLENIE
     st.subheader("📊 Porównanie baz – rozszerzone")
     st.dataframe(summary, use_container_width=True)
     st.subheader("📊 Skuteczność ponownych kontaktów")
     st.dataframe(ponowna_analiza, use_container_width=True)
 
+    # 📥 EXPORT XLSX
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         summary.to_excel(writer, index=False, sheet_name="Porównanie baz")
@@ -140,9 +148,8 @@ if uploaded_files:
         for i, col in enumerate(ponowna_analiza.columns):
             ws_ponowny.set_column(i, i, 28)
 
-        # Dodanie wykresów i legendy
         chart_sheet = wb.add_worksheet("Wykresy")
-        metrics = ["💯 L100R", "📉 CTR", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
+        metrics = ["💯 L100R", "📉 CTR", "ROE (%)", "🔁 % Ponowny kontakt", "🔁 Śr. prób"]
         for i, metric in enumerate(metrics):
             chart = wb.add_chart({'type': 'column'})
             chart.add_series({
@@ -159,6 +166,7 @@ if uploaded_files:
         legenda = [
             ("💯 L100R", "Spotkania na 100 rekordów"),
             ("📉 CTR", "Połączenia / spotkania"),
+            ("ROE (%)", "Efektywność: % umówień / prób"),
             ("🔁 % Ponowny kontakt", "Odsetek ponownych prób"),
             ("🔁 Śr. prób", "Średnia prób per rekord"),
             ("📋 Rekordów", "Liczba rekordów"),
@@ -167,7 +175,8 @@ if uploaded_files:
             ("❌ Rekordy z błędem", "Rozłączone / błędny numer"),
             ("📅 Ostatni kontakt", "Data ostatniego kontaktu"),
             ("⏳ Śr. czas reakcji (dni)", "Import → Kontakt"),
-            ("🚨 Alert", "Ocena bazy wg L100R (🟣 do ⚫)")
+            ("🚨 Alert CTR", "Ocena bazy wg CTR"),
+            ("📝 Wniosek", "Ocena i zalecenie na podstawie CTR/ROE")
         ]
 
         for ws, start in [
@@ -179,14 +188,6 @@ if uploaded_files:
             for idx, (label, desc) in enumerate(legenda, start + 1):
                 ws.write(idx, 0, label)
                 ws.write(idx, 1, desc)
-
-            ws.write(start, 3, "🚨 Alert — jakość bazy wg L100R:")
-            ws.write(start + 1, 3, "🟣 ≥ 1.00");      ws.write(start + 1, 4, "Baza genialna")
-            ws.write(start + 2, 3, "🟢 0.57–0.99");   ws.write(start + 2, 4, "Baza bardzo dobra")
-            ws.write(start + 3, 3, "🟡 0.32–0.56");   ws.write(start + 3, 4, "Baza solidna")
-            ws.write(start + 4, 3, "🟠 0.23–0.31");   ws.write(start + 4, 4, "Baza przeciętna")
-            ws.write(start + 5, 3, "🔴 0.10–0.22");   ws.write(start + 5, 4, "Baza słaba")
-            ws.write(start + 6, 3, "⚫ < 0.10");       ws.write(start + 6, 4, "Baza martwa")
 
     st.download_button(
         "⬇️ Pobierz raport Excel",
