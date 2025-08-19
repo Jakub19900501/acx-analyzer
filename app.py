@@ -54,7 +54,7 @@ if uploaded_files:
         col_closereason    = resolve_col(df, "CloseReason","closereason","Close Reason","close reason")
         col_recordstate    = resolve_col(df, "RecordState","recordstate","State","state","Status","status")
 
-        # normalizacja (do dopasowań tekstowych)
+        # normalizacja do dopasowań tekstowych
         for c in [col_lcc,col_lcr,col_closereason,col_recordstate]:
             df[c+"_clean"] = df[c].apply(normalize_text)
 
@@ -63,45 +63,41 @@ if uploaded_files:
         lcc_clean = df[col_lcc+"_clean"].fillna("")
         cr_clean  = df[col_closereason+"_clean"].fillna("")
 
-        # oryginalne wartości do detekcji pustych
+        # surowe (nienormalizowane) do detekcji pustych
         lcc_blank = series_is_blank(df[col_lcc])
 
-        # --- MASKI POD TWOJĄ LOGIKĘ ---
+        # --- MASKI (dokładnie wg Twojej specyfikacji) ---
 
-        # 1) Skuteczny (po LCC)
+        # 1) ✅ Skuteczny — po LastCallCode
         df["Skuteczny"] = df[col_lcc].apply(lambda x: bool(SUKCES_REGEX.search(normalize_text(x))))
 
-        # 2) Otwarte
+        # 2) 🟦 Otwarte — RecordState = "Otwarty"
         m_otwarte = rs_clean.str.contains(r"\botwart", na=False)
 
-        # 3) Ponowny kontakt (system) = RecordState = Przełożony & LastCallCode puste
-        m_przelozony_rs = rs_clean.str.contains(r"\bprze.?o?zony\b", na=False)  # 'przeozony'/'przelozony'
+        # 3) 🔁 Ponowny kontakt (system) — RecordState = "Przełożony" i LastCallCode puste
+        # odporne dopasowanie: 'przelozony', 'przeozony', 'prze lozony'
+        m_przelozony_rs = rs_clean.str.contains(r"\bprze\s*(?:lozony|ozony)\b", na=False)
         m_pon_sys = m_przelozony_rs & lcc_blank
 
-        # 4) Ponowny kontakt (konsultant) = 'ponowny kontakt' w LCR/LCC, z wykluczeniem systemowych
-        m_pon_general = lcr_clean.str.contains(PON_KONTAKT_PAT, na=False) | lcc_clean.str_contains(PON_KONTAKT_PAT, na=False)
-        # pandas<2.1 fallback:
-        try:
-            pass
-        except:
-            m_pon_general = lcr_clean.str.contains(PON_KONTAKT_PAT, na=False) | lcc_clean.str.contains(PON_KONTAKT_PAT, na=False)
+        # 4) 🔁 Ponowny kontakt (konsultant) — 'ponowny kontakt' w LCR/LCC, z wykluczeniem systemowych
+        m_pon_general = lcr_clean.str.contains(PON_KONTAKT_PAT, na=False) | lcc_clean.str.contains(PON_KONTAKT_PAT, na=False)
         m_pon_kons = m_pon_general & (~m_pon_sys)
 
-        # 5) Zamknięty
+        # 5) Zamknięty — RecordState = "Zamknięty"
         m_zamkniety = rs_clean.str.contains(r"\bzamkn", na=False)
 
-        # 6) Zamkn. system = Zamknięty & CloseReason in {"Brak dostępnych telefonów","Błędne dane telefonów"}
+        # 6) 🤖 Zamkn. system — Zamknięty & CloseReason ∈ {"Brak dostępnych telefonów","Błędne dane telefonów"}
         m_cr_bdt    = cr_clean.str.contains(r"brak dostepnych telefon", na=False)
-        m_cr_bledne = cr_clean.str.contains(r"bledn\w*\s+dane\s+telefon", na=False)
+        m_cr_bledne = cr_clean.str_contains if False else cr_clean.str.contains(r"bledn\w*\s+dane\s+telefon", na=False)
         m_zamk_sys  = m_zamkniety & (m_cr_bdt | m_cr_bledne)
 
-        # 7) Zamkn. konsultant = Zamknięty & LastCallCode ≠ puste, wyklucz Zamkn. system
+        # 7) 👤 Zamkn. konsultant — Zamknięty & LastCallCode ≠ puste, wyklucz Zamkn. system
         m_zamk_kons = m_zamkniety & (~lcc_blank) & (~m_zamk_sys)
 
-        # 8) Błędny numer (statystyka CloseReason – jak było)
+        # 8) ❌ Brak tel. (CloseReason) — jak było (statystyka z CloseReason)
         m_bledny_close = cr_clean.str.contains(r"brak dostepnych telefon", na=False)
 
-        # --- przypisanie masek ---
+        # --- przypisanie masek do kolumn logicznych ---
         df["Otwarte"]                 = m_otwarte
         df["PonKontKonsultant"]       = m_pon_kons
         df["PonKontSystem"]           = m_pon_sys
@@ -149,10 +145,10 @@ if uploaded_files:
         "ZamknKons": "👤 Zamkn. konsultant"
     })
 
-    # 🟧 Przełożony = suma ponownych kontaktów
+    # 🟧 Przełożony = suma ponownych kontaktów (NIE z RecordState)
     summary["🟧 Przełożony"] = summary["🔁 Ponowny kontakt (konsultant)"] + summary["🔁 Ponowny kontakt (system)"]
 
-    # --- WYKORZYSTANIE (otwarte + wszystkie ponowne) ---
+    # --- WYKORZYSTANIE ---
     niewyk = (
         summary["🟦 Niewydzwonione (otwarte)"]
         + summary["🔁 Ponowny kontakt (konsultant)"]
@@ -161,7 +157,6 @@ if uploaded_files:
     summary["% Niewykorzystane"] = (niewyk / summary["📋 Rekordów"] * 100).round(2)
     summary["% Wykorzystane"]    = (100 - summary["% Niewykorzystane"]).round(2)
 
-    # status bazy
     def status_bazy(util_pct: float) -> str:
         if pd.isna(util_pct): return "Brak danych"
         if util_pct >= 90:    return "🔴 Prawie pusta – czas dokupić"
@@ -213,8 +208,7 @@ if uploaded_files:
         "% Wykorzystane", "% Niewykorzystane", "🛒 Status bazy",
         "🔁 % Ponowny kontakt (konsultant)", "🔁 % Ponowny kontakt (system)", "🔁 Śr. prób",
         "📋 Rekordów",
-        "🟦 Niewydzwonione (otwarte)",
-        "🔁 Ponowny kontakt (konsultant)", "🔁 Ponowny kontakt (system)", "🟧 Przełożony",
+        "🟦 Niewydzwonione (otwarte)", "🔁 Ponowny kontakt (konsultant)", "🔁 Ponowny kontakt (system)", "🟧 Przełożony",
         "🤖 Zamkn. system", "👤 Zamkn. konsultant",
         "❌ Brak tel. (CloseReason)",
         "📞 Połączeń", "✅ Spotkań",
