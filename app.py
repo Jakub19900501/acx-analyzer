@@ -29,6 +29,12 @@ def resolve_col(df: pd.DataFrame, *cands):
 # Ujednolicony sukces (w tym 'umówienie magazyn')
 SUKCES_REGEX = re.compile(r"(umowienie magazyn|umowienie|umow|sukces|magazyn)")
 
+# Szersze dopasowania stanów/razonów
+PRZELOZONY_PAT = re.compile(r"(przel|supervis|wstrzym|odloz|odlozony|odsun|hold|follow up)")
+ZAMKN_SYS_PAT  = re.compile(r"(nie udalo sie|nie dodzw|brak polaczenia|bez odpowiedzi|timeout|czas rozmowy|system)")
+PON_KONTAKT_PAT = re.compile(r"\bponowny kontakt\b")
+PON_KONTAKT_SYSTEM_PAT = re.compile(r"(ponowny kontakt).*(system|systemow)|\bsystem.*ponowny kontakt\b")
+
 def is_sukces(x: str) -> bool:
     return bool(SUKCES_REGEX.search(normalize_text(x)))
 
@@ -85,28 +91,38 @@ if uploaded_files:
         col_tries          = resolve_col(df, "TotalTries","totaltries")
         col_lasttry        = resolve_col(df, "LastTryTime","lasttrytime")
         col_import         = resolve_col(df, "ImportCreatedOn","importcreatedon")
-        col_closereason    = resolve_col(df, "CloseReason","closereason")
-        col_recordstate    = resolve_col(df, "RecordState","recordstate")
-        col_endreason      = resolve_col(df, "EndReason","endreason")
-        col_lastcallreason = resolve_col(df, "LastCallReason","lastcallreason")
+        col_closereason    = resolve_col(df, "CloseReason","closereason","Close Reason","close reason")
+        col_recordstate    = resolve_col(df, "RecordState","recordstate","State","state","Status","status")
+        col_endreason      = resolve_col(df, "EndReason","endreason","End Reason","end reason")
+        col_lastcallreason = resolve_col(df, "LastCallReason","lastcallreason","Last Call Reason","last call reason")
 
         # normalizacje pomocnicze
         for c in [col_lcc,col_closereason,col_recordstate,col_endreason,col_lastcallreason]:
             df[c+"_clean"] = df[c].apply(normalize_text)
 
         # flagi
-        df["Skuteczny"]       = df[col_lcc].apply(is_sukces)
-        df["PonownyKontakt"]  = df[col_lcc+"_clean"].str.contains(r"\bponowny kontakt\b")
-        # Błędny: wyłącznie CloseReason == "brak dostępnych telefonow"
-        df["Bledny"]          = df[col_closereason+"_clean"].eq("brak dostepnych telefonow")
+        df["Skuteczny"] = df[col_lcc].apply(is_sukces)
+
+        # Ponowny kontakt (łącznie: code lub reason)
+        pon_from_reason = df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False)
+        pon_from_code   = df[col_lcc+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False)
+        df["PonownyKontakt"] = pon_from_reason | pon_from_code
+
+        # Ponowny kontakt SYSTEM (bardziej szczegółowo)
+        pon_sys_from_reason = df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
+        pon_sys_from_code   = df[col_lcc+"_clean"].fillna("").str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
+        df["PonownyKontaktSystem"] = pon_sys_from_reason | pon_sys_from_code
+
+        # Błędny: wyłącznie CloseReason „brak dostępnych telefonów” (również warianty)
+        df["Bledny"] = df[col_closereason+"_clean"].fillna("").str.contains(r"brak dostepnych telefon", na=False)
 
         # Niewydzwonione/Przełożony/Zamknięcia
-        df["Otwarte"]         = df[col_recordstate+"_clean"].eq("otwarty")
-        df["Przelozony"]      = df[col_recordstate+"_clean"].eq("przelozony")
-        df["ZamknSystem"]     = df[col_endreason+"_clean"].eq("nie udalo sie polaczyc")
-        df["ZamknKons"]       = (df[col_lastcallreason+"_clean"].notna() &
-                                 (df[col_lastcallreason+"_clean"] != "") &
-                                 (~df[col_lastcallreason+"_clean"].eq("ponowny kontakt")))
+        df["Otwarte"]         = df[col_recordstate+"_clean"].fillna("").str.contains(r"\botwart", na=False)
+        df["Przelozony"]      = df[col_recordstate+"_clean"].fillna("").str.contains(PRZELOZONY_PAT, na=False)
+        df["ZamknSystem"]     = df[col_endreason+"_clean"].fillna("").str.contains(ZAMKN_SYS_PAT, na=False)
+        df["ZamknKons"]       = (
+            df[col_lastcallreason+"_clean"].fillna("") != ""
+        ) & (~df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False))
 
         # liczby/czasy
         df["TotalTries"]      = pd.to_numeric(df[col_tries], errors="coerce").fillna(0)
@@ -124,6 +140,7 @@ if uploaded_files:
         "TotalTries": "sum",
         "Skuteczny": "sum",
         "PonownyKontakt": "sum",
+        "PonownyKontaktSystem": "sum",
         "Bledny": "sum",
         "LastTryTime": "max",
         "ImportCreatedOn": "min",
@@ -139,6 +156,7 @@ if uploaded_files:
         "TotalTries": "📞 Połączeń",
         "Skuteczny": "✅ Spotkań",
         "PonownyKontakt": "🔁 Ponowny kontakt",
+        "PonownyKontaktSystem": "🔁 Ponowny kontakt (system)",
         "Bledny": "❌ Brak tel. (CloseReason)",
         "LastTryTime": "📅 Ostatni kontakt",
         "ImportCreatedOn": "🕓 Data importu",
@@ -148,12 +166,14 @@ if uploaded_files:
         "ZamknKons": "👤 Zamkn. konsultant"
     }, inplace=True)
 
-    # wykorzystanie bazy
-    summary["% Niewykorzystane"] = (summary["🟦 Niewydzwonione (otwarte)"] / summary["📋 Rekordów"] * 100).round(2)
+    # --- WYKORZYSTANIE ---
+    # Niewykorzystane = otwarte + WSZYSTKIE ponowne kontakty (w tym systemowe)
+    niewyk = summary["🟦 Niewydzwonione (otwarte)"] + summary["🔁 Ponowny kontakt"]
+    summary["% Niewykorzystane"] = (niewyk / summary["📋 Rekordów"] * 100).round(2)
     summary["% Wykorzystane"]    = (100 - summary["% Niewykorzystane"]).round(2)
     summary["🛒 Status bazy"]    = summary["% Wykorzystane"].apply(status_bazy)
 
-    # metryki (CTR ZAWSZE liczymy z realnych prób/umówień)
+    # --- METRYKI ---
     summary["💯 L100R"] = (summary["✅ Spotkań"] / summary["📋 Rekordów"] * 100).round(2)
 
     spotkania_safe  = summary["✅ Spotkań"].replace(0, pd.NA)
@@ -163,6 +183,7 @@ if uploaded_files:
     summary["ROE (%)"] = (summary["✅ Spotkań"] / polaczenia_safe * 100).round(2)
 
     summary["🔁 % Ponowny kontakt"] = (summary["🔁 Ponowny kontakt"] / summary["📋 Rekordów"] * 100).round(2)
+    summary["🔁 % Ponowny kontakt (system)"] = (summary["🔁 Ponowny kontakt (system)"] / summary["📋 Rekordów"] * 100).round(2)
     summary["🔁 Śr. prób"] = (summary["📞 Połączeń"] / summary["📋 Rekordów"].replace(0,1)).round(2)
 
     summary["⏳ Śr. czas reakcji (dni)"] = (summary["📅 Ostatni kontakt"] - summary["🕓 Data importu"]).dt.days
@@ -181,11 +202,12 @@ if uploaded_files:
         "📁 Baza",
         "💯 L100R", "📉 CTR", "ROE (%)",
         "% Wykorzystane", "% Niewykorzystane", "🛒 Status bazy",
-        "🔁 % Ponowny kontakt", "🔁 Śr. prób",
-        "📋 Rekordów", "🟦 Niewydzwonione (otwarte)", "🟧 Przełożony",
-        "🤖 Zamkn. system", "👤 Zamkn. konsultant",
-        "📞 Połączeń", "✅ Spotkań", "🔁 Ponowny kontakt",
+        "🔁 % Ponowny kontakt", "🔁 % Ponowny kontakt (system)", "🔁 Śr. prób",
+        "📋 Rekordów",
+        "🟦 Niewydzwonione (otwarte)", "🔁 Ponowny kontakt", "🔁 Ponowny kontakt (system)",
+        "🟧 Przełożony", "🤖 Zamkn. system", "👤 Zamkn. konsultant",
         "❌ Brak tel. (CloseReason)",
+        "📞 Połączeń", "✅ Spotkań",
         "📅 Ostatni kontakt", "🕓 Data importu", "⏳ Śr. czas reakcji (dni)",
         "🚨 Alert CTR", "📝 Wniosek"
     ]
@@ -194,7 +216,7 @@ if uploaded_files:
     # sort: lepszy CTR wyżej; przy remisie większe wykorzystanie
     summary = summary.sort_values(by=["📉 CTR", "% Wykorzystane"], ascending=[True, False])
 
-    # ---------- PONOWNY KONTAKT ----------
+    # ---------- PONOWNY KONTAKT (głębiej) ----------
     ponowne = df_all[df_all["TotalTries"] > 1].copy()
     ponowne["Skuteczne"] = ponowne["LastCallCode"].apply(is_sukces)
     ponowne_um = ponowne[ponowne["Skuteczne"]]
@@ -203,6 +225,7 @@ if uploaded_files:
     for baza in ponowne["Baza"].unique():
         b_all = ponowne[ponowne["Baza"] == baza]
         b_ok  = ponowne_um[ponowne_um["Baza"] == baza]
+
         if len(b_ok) > 0:
             vc = b_ok["TotalTries"].value_counts().sort_index()
             rozklad = ", ".join([f"przy {int(k)}. próbie: {v} umówień" for k, v in vc.items()])
@@ -211,13 +234,20 @@ if uploaded_files:
             okcnt = len(b_ok)
         else:
             rozklad, sr, med, okcnt = "", float("nan"), float("nan"), 0
+
+        # ile z „ponowny kontakt” to systemowe
+        pon_all = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontakt"]==True)]
+        pon_sys = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontaktSystem"]==True)]
+
         rows.append({
             "📁 Baza": baza,
             "🔁 Rekordów ponownych (>1 próba)": len(b_all),
             "✅ Umówienia (z ponownych)": okcnt,
             "📈 Śr. próba umówienia": None if pd.isna(sr) else sr,
             "🎯 Mediana próby": None if pd.isna(med) else med,
-            "📊 Rozkład prób": rozklad
+            "📊 Rozkład prób": rozklad,
+            "🔁 Ponowny kontakt (wszystkie)": len(pon_all),
+            "🔁 Ponowny kontakt (system)": len(pon_sys)
         })
     ponowna_analiza = pd.DataFrame(rows)
 
@@ -247,7 +277,7 @@ if uploaded_files:
             ws_p.set_column(i, i, 34)
 
         chart_sheet = wb.add_worksheet("Wykresy")
-        metrics = ["💯 L100R","📉 CTR","ROE (%)","% Wykorzystane","% Niewykorzystane","🔁 % Ponowny kontakt","🔁 Śr. prób"]
+        metrics = ["💯 L100R","📉 CTR","ROE (%)","% Wykorzystane","% Niewykorzystane","🔁 % Ponowny kontakt","🔁 % Ponowny kontakt (system)","🔁 Śr. prób"]
         for i, m in enumerate(metrics):
             ch = wb.add_chart({'type':'column'})
             ch.add_series({
@@ -265,16 +295,17 @@ if uploaded_files:
             ("💯 L100R","Spotkania na 100 rekordów."),
             ("📉 CTR","Połączenia / umówienia – ZAWSZE liczone z realnych prób/umówień."),
             ("ROE (%)","% połączeń zakończonych umówieniem."),
-            ("% Wykorzystane","100 - % otwartych (niewydzwonionych)."),
-            ("% Niewykorzystane","RecordState='otwarty'."),
+            ("% Wykorzystane","100 - % niewykorzystanych; niewykorzystane = otwarte + wszystkie ponowne kontakty."),
+            ("% Niewykorzystane","Otwarte + wszystkie 'ponowny kontakt' (w tym systemowe)."),
             ("🛒 Status bazy","🟢 <70%, 🟡 70–89%, 🔴 ≥90%."),
-            ("🔁 % Ponowny kontakt","Odsetek rekordów z 'ponowny kontakt'."),
+            ("🔁 % Ponowny kontakt","Odsetek rekordów ze statusem 'ponowny kontakt' (ogółem)."),
+            ("🔁 % Ponowny kontakt (system)","Odsetek rekordów z 'ponowny kontakt' systemowym."),
             ("🔁 Śr. prób","Średnia prób per rekord."),
-            ("🟦 Niewydzwonione (otwarte)","RecordState='otwarty'."),
-            ("🟧 Przełożony","RecordState='przełożony'."),
-            ("🤖 Zamkn. system","EndReason='nie udało się połączyć'."),
-            ("👤 Zamkn. konsultant","LastCallReason ≠ 'ponowny kontakt'."),
-            ("❌ Brak tel. (CloseReason)","CloseReason='brak dostępnych telefonow'."),
+            ("🟦 Niewydzwonione (otwarte)","RecordState zawiera 'otwart'."),
+            ("🟧 Przełożony","RecordState zawiera: przel/supervis/wstrzym/hold etc."),
+            ("🤖 Zamkn. system","EndReason zawiera: nie udalo sie/nie dodzw/brak polaczenia/timeout/system."),
+            ("👤 Zamkn. konsultant","LastCallReason ustawione i ≠ 'ponowny kontakt'."),
+            ("❌ Brak tel. (CloseReason)","CloseReason zawiera 'brak dostepnych telefon'."),
             ("🚨 Alert CTR","Kolor wg CTR tylko gdy wykorzystanie ≥40%; przy <40% pokazujemy ⏳ Za wczesnie."),
             ("📝 Wniosek","Komentarz na bazie CTR/ROE/% wykorzystania.")
         ]
