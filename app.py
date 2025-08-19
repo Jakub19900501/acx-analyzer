@@ -29,9 +29,17 @@ def resolve_col(df: pd.DataFrame, *cands):
 # Ujednolicony sukces (w tym 'umówienie magazyn')
 SUKCES_REGEX = re.compile(r"(umowienie magazyn|umowienie|umow|sukces|magazyn)")
 
-# Szersze dopasowania stanów/razonów
-PRZELOZONY_PAT = re.compile(r"(przel|supervis|wstrzym|odloz|odlozony|odsun|hold|follow up)")
-ZAMKN_SYS_PAT  = re.compile(r"(nie udalo sie|nie dodzw|brak polaczenia|bez odpowiedzi|timeout|czas rozmowy|system)")
+# --- Kluczowe: wzorce dopasowane do Twoich realnych wartości ---
+# 'przeozony' (w eksporcie tak właśnie bywa), ale też warianty typu 'przelozony' itd.
+PRZELOZONY_PAT = re.compile(
+    r"(prze.?o?zony|przeozony|przelozony|supervis|wstrzym|odloz|odsun|hold|follow ?up)"
+)
+
+# 'nie udao sie poaczyc' (Twoja wersja po normalizacji), ale też inne warianty niedodzwonienia
+ZAMKN_SYS_PAT  = re.compile(
+    r"(nie .*po.?aczyc|nie dodzw|brak polaczenia|timeout|bez odpowiedzi|system|poczta gosowa)"
+)
+
 PON_KONTAKT_PAT = re.compile(r"\bponowny kontakt\b")
 PON_KONTAKT_SYSTEM_PAT = re.compile(r"(ponowny kontakt).*(system|systemow)|\bsystem.*ponowny kontakt\b")
 
@@ -39,7 +47,7 @@ def is_sukces(x: str) -> bool:
     return bool(SUKCES_REGEX.search(normalize_text(x)))
 
 def klasyfikuj_alert_ctr_with_util(ctr_val: float, util_pct: float) -> str:
-    """Alert CTR z uwzględnieniem wykorzystania (CTR zawsze liczony; alert tylko klasyfikuje)."""
+    """Alert CTR z uwzględnieniem wykorzystania (CTR zawsze liczone; alert tylko klasyfikuje)."""
     if pd.isna(util_pct):
         return "Brak danych"
     if util_pct < 40:
@@ -88,41 +96,56 @@ if uploaded_files:
         # mapowanie nazw (różne warianty)
         col_id             = resolve_col(df, "Id","id")
         col_lcc            = resolve_col(df, "LastCallCode","lastcallcode")
-        col_tries          = resolve_col(df, "TotalTries","totaltries")
+        col_lcr            = resolve_col(df, "LastCallReason","lastcallreason","Last Call Reason","last call reason")
+        col_tries          = resolve_col(df, "TotalTries","totaltries","Tries","tries")
         col_lasttry        = resolve_col(df, "LastTryTime","lasttrytime")
         col_import         = resolve_col(df, "ImportCreatedOn","importcreatedon")
         col_closereason    = resolve_col(df, "CloseReason","closereason","Close Reason","close reason")
         col_recordstate    = resolve_col(df, "RecordState","recordstate","State","state","Status","status")
         col_endreason      = resolve_col(df, "EndReason","endreason","End Reason","end reason")
-        col_lastcallreason = resolve_col(df, "LastCallReason","lastcallreason","Last Call Reason","last call reason")
+        col_disc_reason    = resolve_col(df, "DisconnectedReason","disconnectedreason")
+        col_disc_cause     = resolve_col(df, "DisconnectedCause","disconnectedcause")
 
         # normalizacje pomocnicze
-        for c in [col_lcc,col_closereason,col_recordstate,col_endreason,col_lastcallreason]:
+        for c in [col_lcc,col_lcr,col_closereason,col_recordstate,col_endreason,col_disc_reason,col_disc_cause]:
             df[c+"_clean"] = df[c].apply(normalize_text)
 
-        # flagi
+        # --- flagi skuteczności / ponownych kontaktów ---
         df["Skuteczny"] = df[col_lcc].apply(is_sukces)
 
-        # Ponowny kontakt (łącznie: code lub reason)
-        pon_from_reason = df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False)
+        pon_from_reason = df[col_lcr+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False)
         pon_from_code   = df[col_lcc+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False)
         df["PonownyKontakt"] = pon_from_reason | pon_from_code
 
-        # Ponowny kontakt SYSTEM (bardziej szczegółowo)
-        pon_sys_from_reason = df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
+        pon_sys_from_reason = df[col_lcr+"_clean"].fillna("").str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
         pon_sys_from_code   = df[col_lcc+"_clean"].fillna("").str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
         df["PonownyKontaktSystem"] = pon_sys_from_reason | pon_sys_from_code
 
-        # Błędny: wyłącznie CloseReason „brak dostępnych telefonów” (również warianty)
+        # --- błędny numer ---
         df["Bledny"] = df[col_closereason+"_clean"].fillna("").str.contains(r"brak dostepnych telefon", na=False)
 
-        # Niewydzwonione/Przełożony/Zamknięcia
-        df["Otwarte"]         = df[col_recordstate+"_clean"].fillna("").str.contains(r"\botwart", na=False)
-        df["Przelozony"]      = df[col_recordstate+"_clean"].fillna("").str.contains(PRZELOZONY_PAT, na=False)
-        df["ZamknSystem"]     = df[col_endreason+"_clean"].fillna("").str.contains(ZAMKN_SYS_PAT, na=False)
-        df["ZamknKons"]       = (
-            df[col_lastcallreason+"_clean"].fillna("") != ""
-        ) & (~df[col_lastcallreason+"_clean"].fillna("").str.contains(PON_KONTAKT_PAT, na=False))
+        # --- stany rekordu ---
+        rs_clean = df[col_recordstate+"_clean"].fillna("")
+        er_clean = df[col_endreason+"_clean"].fillna("")
+        lcr_clean = df[col_lcr+"_clean"].fillna("")
+        dcr_clean = df[col_disc_reason+"_clean"].fillna("")
+        dcc_clean = df[col_disc_cause+"_clean"].fillna("")
+
+        df["Otwarte"]     = rs_clean.str.contains(r"\botwart", na=False)
+
+        # Przełożony: łapiemy 'przeozony'/'przelozony' i inne warianty + słowa kluczowe
+        df["Przelozony"]  = rs_clean.str.contains(PRZELOZONY_PAT, na=False)
+
+        # Zamkn. system: szerokie wzorce po EndReason/Disconnected*, a także fallback:
+        # jeśli zamkniety + brak LastCallReason (czyli nie zamknął konsultant) → traktuj jako system
+        sys_from_end = er_clean.str.contains(ZAMKN_SYS_PAT, na=False)
+        sys_from_disc = dcr_clean.str.contains(ZAMKN_SYS_PAT, na=False) | dcc_clean.str.contains(ZAMKN_SYS_PAT, na=False)
+        closed_rs = rs_clean.str.contains(r"\bzamkn", na=False)
+        no_user_reason = (lcr_clean == "")
+        df["ZamknSystem"] = sys_from_end | sys_from_disc | (closed_rs & no_user_reason)
+
+        # Zamkn. konsultant: gdy jest powód ostatniego połączenia i ≠ 'ponowny kontakt'
+        df["ZamknKons"] = (lcr_clean != "") & (~lcr_clean.str.contains(PON_KONTAKT_PAT, na=False))
 
         # liczby/czasy
         df["TotalTries"]      = pd.to_numeric(df[col_tries], errors="coerce").fillna(0)
@@ -218,7 +241,7 @@ if uploaded_files:
 
     # ---------- PONOWNY KONTAKT (głębiej) ----------
     ponowne = df_all[df_all["TotalTries"] > 1].copy()
-    ponowne["Skuteczne"] = ponowne["LastCallCode"].apply(is_sukces)
+    ponowne["Skuteczne"] = df_all.loc[ponowne.index, "Skuteczny"]
     ponowne_um = ponowne[ponowne["Skuteczne"]]
 
     rows = []
@@ -235,7 +258,6 @@ if uploaded_files:
         else:
             rozklad, sr, med, okcnt = "", float("nan"), float("nan"), 0
 
-        # ile z „ponowny kontakt” to systemowe
         pon_all = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontakt"]==True)]
         pon_sys = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontaktSystem"]==True)]
 
@@ -302,8 +324,8 @@ if uploaded_files:
             ("🔁 % Ponowny kontakt (system)","Odsetek rekordów z 'ponowny kontakt' systemowym."),
             ("🔁 Śr. prób","Średnia prób per rekord."),
             ("🟦 Niewydzwonione (otwarte)","RecordState zawiera 'otwart'."),
-            ("🟧 Przełożony","RecordState zawiera: przel/supervis/wstrzym/hold etc."),
-            ("🤖 Zamkn. system","EndReason zawiera: nie udalo sie/nie dodzw/brak polaczenia/timeout/system."),
+            ("🟧 Przełożony","RecordState zawiera np. 'przeozony/przelozony' lub 'hold/follow up'."),
+            ("🤖 Zamkn. system","End/Disconnected: niedodzwonienia (np. 'nie ... poaczyc', 'brak polaczenia', 'timeout'); albo 'zamkniety' i brak LastCallReason."),
             ("👤 Zamkn. konsultant","LastCallReason ustawione i ≠ 'ponowny kontakt'."),
             ("❌ Brak tel. (CloseReason)","CloseReason zawiera 'brak dostepnych telefon'."),
             ("🚨 Alert CTR","Kolor wg CTR tylko gdy wykorzystanie ≥40%; przy <40% pokazujemy ⏳ Za wczesnie."),
