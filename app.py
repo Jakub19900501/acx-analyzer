@@ -28,52 +28,7 @@ def resolve_col(df: pd.DataFrame, *cands):
 
 # Sukces (w tym "umówienie magazyn")
 SUKCES_REGEX = re.compile(r"(umowienie magazyn|umowienie|umow|sukces|magazyn)")
-
-# Wzorce
 PON_KONTAKT_PAT = re.compile(r"\bponowny kontakt\b")
-# Elastyczne: "ponowny kontakt (system)", "ponowny kontakt - system", "systemowy ponowny kontakt", itp.
-PON_KONTAKT_SYSTEM_PAT = re.compile(
-    r"\bponown\w*\s*konta\w*(?:\s*[-(]\s*)?system\w*\b|\bsystemow\w*\s*ponown\w*\s*konta\w*\b"
-)
-
-def is_sukces(x: str) -> bool:
-    return bool(SUKCES_REGEX.search(normalize_text(x)))
-
-def klasyfikuj_alert_ctr_with_util(ctr_val: float, util_pct: float) -> str:
-    if pd.isna(util_pct):
-        return "Brak danych"
-    if util_pct < 40:
-        return "⏳ Za wczesnie (wykorz. <40%)"
-    if pd.isna(ctr_val):
-        return "Brak danych"
-    if ctr_val < 150:   return "🟣 Genialna"
-    if ctr_val < 300:   return "🟢 Bardzo dobra"
-    if ctr_val < 500:   return "🟡 Solidna"
-    if ctr_val < 700:   return "🟠 Przeciętna"
-    if ctr_val < 1000:  return "🔴 Słaba"
-    return "⚫ Martwa"
-
-def status_bazy(util_pct: float) -> str:
-    if pd.isna(util_pct):
-        return "Brak danych"
-    if util_pct >= 90:
-        return "🔴 Prawie pusta – czas dokupić"
-    if util_pct >= 70:
-        return "🟡 Na wyczerpaniu"
-    return "🟢 OK"
-
-def generuj_wniosek(ctr_val, roe_val, umowienia, util_pct):
-    if (umowienia is None or umowienia == 0):
-        return "❌ Brak umówień – baza prawdopodobnie martwa."
-    if util_pct < 40:
-        return f"⏳ W trakcie – wykorzystanie {util_pct:.0f}%. Nie wyciągaj pochopnych wniosków."
-    if not pd.isna(ctr_val) and ctr_val >= 1000:
-        return "⚠️ CTR ≥ 1000 – baza wypalona. Rozważ wycofanie/filtry."
-    if not pd.isna(roe_val) and roe_val > 5:
-        return "✅ ROE > 5% – baza bardzo efektywna. Warto kontynuować."
-    if not pd.isna(ctr_val) and ctr_val < 300:
-        return "👍 CTR < 300 – kaloryczna baza."
-    return ""
 
 # ---------- MAIN ----------
 
@@ -94,54 +49,53 @@ if uploaded_files:
         col_import         = resolve_col(df, "ImportCreatedOn","importcreatedon")
         col_closereason    = resolve_col(df, "CloseReason","closereason","Close Reason","close reason")
         col_recordstate    = resolve_col(df, "RecordState","recordstate","State","state","Status","status")
-        col_endreason      = resolve_col(df, "EndReason","endreason","End Reason","end reason")
-        col_disc_reason    = resolve_col(df, "DisconnectedReason","disconnectedreason")
-        col_disc_cause     = resolve_col(df, "DisconnectedCause","disconnectedcause")
 
         # normalizacja
-        for c in [col_lcc,col_lcr,col_closereason,col_recordstate,col_endreason,col_disc_reason,col_disc_cause]:
+        for c in [col_lcc,col_lcr,col_closereason,col_recordstate]:
             df[c+"_clean"] = df[c].apply(normalize_text)
 
         rs_clean  = df[col_recordstate+"_clean"].fillna("")
         lcr_clean = df[col_lcr+"_clean"].fillna("")
         lcc_clean = df[col_lcc+"_clean"].fillna("")
-        dcc_clean = df[col_disc_cause+"_clean"].fillna("")
+        cr_clean  = df[col_closereason+"_clean"].fillna("")
 
-        # --- flagi ---
-        df["Skuteczny"] = df[col_lcc].apply(is_sukces)
+        # --- MASKI POD LOGIKĘ ---
+        # 1) Skuteczny
+        df["Skuteczny"] = df[col_lcc].apply(lambda x: bool(SUKCES_REGEX.search(normalize_text(x))))
 
-        # ogólny "Ponowny kontakt"
-        pon_from_reason = lcr_clean.str.contains(PON_KONTAKT_PAT, na=False)
-        pon_from_code   = lcc_clean.str.contains(PON_KONTAKT_PAT, na=False)
-        df["PonownyKontakt"] = pon_from_reason | pon_from_code
+        # 2) Otwarte
+        m_otwarte = rs_clean.str.contains(r"\botwart", na=False)
 
-        # "Ponowny kontakt (system)" (po reason/code/status – wszystkie warianty)
-        pon_sys_from_reason = lcr_clean.str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
-        pon_sys_from_code   = lcc_clean.str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
-        pon_sys_from_state  = rs_clean.str.contains(PON_KONTAKT_SYSTEM_PAT, na=False)
-        df["PonownyKontaktSystem"] = pon_sys_from_reason | pon_sys_from_code | pon_sys_from_state
+        # 3) Ponowny kontakt (system): RecordState = Przełożony & LastCallCode puste
+        m_przelozony_rs = rs_clean.str.contains(r"\bprze.?o?zony\b", na=False)  # obejmuje 'przeozony', 'przelozony'
+        m_lcc_empty = (lcc_clean == "")
+        m_pon_sys = m_przelozony_rs & m_lcc_empty
 
-        # "Przełożony" – licz TYLKO czyste warianty RecordState; wyklucz „ponowny kontakt (system)”
-        df["Przelozony"] = (
-            rs_clean.isin(["przelozony","przeozony","prze lozony"])
-            & (~df["PonownyKontaktSystem"])
-        )
+        # 4) Ponowny kontakt (konsultant): 'ponowny kontakt' (LCR/LCC), z wykluczeniem systemowych
+        m_pon_general = lcr_clean.str.contains(PON_KONTAKT_PAT, na=False) | lcc_clean.str.contains(PON_KONTAKT_PAT, na=False)
+        m_pon_kons = m_pon_general & (~m_pon_sys)
 
-        # "Otwarte"
-        df["Otwarte"] = rs_clean.str.contains(r"\botwart", na=False)
+        # 5) Zamknięty
+        m_zamkniety = rs_clean.str.contains(r"\bzamkn", na=False)
 
-        # "Zamkn. konsultant": jest LastCallReason i ≠ 'ponowny kontakt'
-        df["ZamknKons"] = (lcr_clean != "") & (~lcr_clean.str.contains(PON_KONTAKT_PAT, na=False))
+        # 6) Zamkn. system: RecordState=Zamknięty & CloseReason ∈ {"Brak dostępnych telefonów","Błędne dane telefonów"}
+        m_cr_bdt = cr_clean.str.contains(r"brak dostepnych telefon", na=False)
+        m_cr_bledne = cr_clean.str.contains(r"bledn\w*\s+dane\s+telefon", na=False)
+        m_zamk_sys = m_zamkniety & (m_cr_bdt | m_cr_bledne)
 
-        # "Zamkn. system": DOKŁADNIE wg Twojej definicji
-        # RecordState = Zamknięty AND DisconnectedCause = "Błędny numer"
-        df["ZamknSystem"] = (
-            rs_clean.str.contains(r"\bzamkn", na=False)
-            & dcc_clean.str.contains(r"\bbledny numer\b", na=False)
-        )
+        # 7) Zamkn. konsultant: RecordState=Zamknięty & LastCallCode ≠ puste, z wykluczeniem Zamkn. system
+        m_zamk_kons = m_zamkniety & (~m_lcc_empty) & (~m_zamk_sys)
 
-        # "Błędny numer" (CloseReason wariant)
-        df["Bledny"] = df[col_closereason+"_clean"].fillna("").str.contains(r"brak dostepnych telefon", na=False)
+        # 8) Błędny numer (statystyka CloseReason – jak było)
+        m_bledny_close = cr_clean.str.contains(r"brak dostepnych telefon", na=False)
+
+        # --- przypisanie masek do kolumn logicznych ---
+        df["Otwarte"]                 = m_otwarte
+        df["PonKontKonsultant"]       = m_pon_kons
+        df["PonKontSystem"]           = m_pon_sys
+        df["ZamknSystem"]             = m_zamk_sys
+        df["ZamknKons"]               = m_zamk_kons
+        df["Bledny"]                  = m_bledny_close
 
         # liczby/czasy
         df["TotalTries"]      = pd.to_numeric(df[col_tries], errors="coerce").fillna(0)
@@ -154,57 +108,94 @@ if uploaded_files:
     df_all = pd.concat(frames, ignore_index=True)
 
     # --- agregacja per baza ---
-    summary = df_all.groupby("Baza").agg({
+    base_agg = df_all.groupby("Baza").agg({
         "Id": "count",
         "TotalTries": "sum",
         "Skuteczny": "sum",
-        "PonownyKontakt": "sum",
-        "PonownyKontaktSystem": "sum",
+        "PonKontKonsultant": "sum",
+        "PonKontSystem": "sum",
         "Bledny": "sum",
         "LastTryTime": "max",
         "ImportCreatedOn": "min",
         "Otwarte": "sum",
-        "Przelozony": "sum",
         "ZamknSystem": "sum",
         "ZamknKons": "sum"
     }).reset_index()
 
-    summary.rename(columns={
+    # Kolumny wynikowe + nazwy
+    summary = base_agg.rename(columns={
         "Baza": "📁 Baza",
         "Id": "📋 Rekordów",
         "TotalTries": "📞 Połączeń",
         "Skuteczny": "✅ Spotkań",
-        "PonownyKontakt": "🔁 Ponowny kontakt",
-        "PonownyKontaktSystem": "🔁 Ponowny kontakt (system)",
+        "PonKontKonsultant": "🔁 Ponowny kontakt (konsultant)",
+        "PonKontSystem": "🔁 Ponowny kontakt (system)",
         "Bledny": "❌ Brak tel. (CloseReason)",
         "LastTryTime": "📅 Ostatni kontakt",
         "ImportCreatedOn": "🕓 Data importu",
         "Otwarte": "🟦 Niewydzwonione (otwarte)",
-        "Przelozony": "🟧 Przełożony",
         "ZamknSystem": "🤖 Zamkn. system",
         "ZamknKons": "👤 Zamkn. konsultant"
-    }, inplace=True)
+    })
 
-    # --- wykorzystanie ---
-    niewyk = summary["🟦 Niewydzwonione (otwarte)"] + summary["🔁 Ponowny kontakt"]
+    # 🟧 Przełożony = suma ponownych kontaktów
+    summary["🟧 Przełożony"] = summary["🔁 Ponowny kontakt (konsultant)"] + summary["🔁 Ponowny kontakt (system)"]
+
+    # --- WYKORZYSTANIE ---
+    niewyk = (
+        summary["🟦 Niewydzwonione (otwarte)"]
+        + summary["🔁 Ponowny kontakt (konsultant)"]
+        + summary["🔁 Ponowny kontakt (system)"]
+    )
     summary["% Niewykorzystane"] = (niewyk / summary["📋 Rekordów"] * 100).round(2)
     summary["% Wykorzystane"]    = (100 - summary["% Niewykorzystane"]).round(2)
-    summary["🛒 Status bazy"]    = summary["% Wykorzystane"].apply(status_bazy)
 
-    # --- metryki ---
+    def status_bazy(util_pct: float) -> str:
+        if pd.isna(util_pct): return "Brak danych"
+        if util_pct >= 90:    return "🔴 Prawie pusta – czas dokupić"
+        if util_pct >= 70:    return "🟡 Na wyczerpaniu"
+        return "🟢 OK"
+
+    summary["🛒 Status bazy"] = summary["% Wykorzystane"].apply(status_bazy)
+
+    # --- METRYKI ---
     summary["💯 L100R"] = (summary["✅ Spotkań"] / summary["📋 Rekordów"] * 100).round(2)
+
     spotkania_safe  = summary["✅ Spotkań"].replace(0, pd.NA)
     polaczenia_safe = summary["📞 Połączeń"].replace(0, pd.NA)
-    summary["📉 CTR"]  = (summary["📞 Połączeń"] / spotkania_safe).round(2)
+
+    summary["📉 CTR"]  = (summary["📞 Połączeń"] / spotkania_safe).round(2)     # zawsze liczone
     summary["ROE (%)"] = (summary["✅ Spotkań"] / polaczenia_safe * 100).round(2)
-    summary["🔁 % Ponowny kontakt"] = (summary["🔁 Ponowny kontakt"] / summary["📋 Rekordów"] * 100).round(2)
-    summary["🔁 % Ponowny kontakt (system)"] = (summary["🔁 Ponowny kontakt (system)"] / summary["📋 Rekordów"] * 100).round(2)
+
+    summary["🔁 % Ponowny kontakt (konsultant)"] = (summary["🔁 Ponowny kontakt (konsultant)"] / summary["📋 Rekordów"] * 100).round(2)
+    summary["🔁 % Ponowny kontakt (system)"]     = (summary["🔁 Ponowny kontakt (system)"] / summary["📋 Rekordów"] * 100).round(2)
     summary["🔁 Śr. prób"] = (summary["📞 Połączeń"] / summary["📋 Rekordów"].replace(0,1)).round(2)
+
     summary["⏳ Śr. czas reakcji (dni)"] = (summary["📅 Ostatni kontakt"] - summary["🕓 Data importu"]).dt.days
+
+    def klasyfikuj_alert_ctr_with_util(ctr_val: float, util_pct: float) -> str:
+        if pd.isna(util_pct): return "Brak danych"
+        if util_pct < 40:     return "⏳ Za wczesnie (wykorz. <40%)"
+        if pd.isna(ctr_val):  return "Brak danych"
+        if ctr_val < 150:     return "🟣 Genialna"
+        if ctr_val < 300:     return "🟢 Bardzo dobra"
+        if ctr_val < 500:     return "🟡 Solidna"
+        if ctr_val < 700:     return "🟠 Przeciętna"
+        if ctr_val < 1000:    return "🔴 Słaba"
+        return "⚫ Martwa"
 
     summary["🚨 Alert CTR"] = summary.apply(
         lambda r: klasyfikuj_alert_ctr_with_util(r["📉 CTR"], r["% Wykorzystane"]), axis=1
     )
+
+    def generuj_wniosek(ctr_val, roe_val, umowienia, util_pct):
+        if (umowienia is None or umowienia == 0): return "❌ Brak umówień – baza prawdopodobnie martwa."
+        if util_pct < 40:                         return f"⏳ W trakcie – wykorzystanie {util_pct:.0f}%. Nie wyciągaj pochopnych wniosków."
+        if not pd.isna(ctr_val) and ctr_val >= 1000: return "⚠️ CTR ≥ 1000 – baza wypalona. Rozważ wycofanie/filtry."
+        if not pd.isna(roe_val) and roe_val > 5:     return "✅ ROE > 5% – baza bardzo efektywna. Warto kontynuować."
+        if not pd.isna(ctr_val) and ctr_val < 300:   return "👍 CTR < 300 – kaloryczna baza."
+        return ""
+
     summary["📝 Wniosek"] = summary.apply(
         lambda r: generuj_wniosek(r["📉 CTR"], r["ROE (%)"], r["✅ Spotkań"], r["% Wykorzystane"]),
         axis=1
@@ -215,10 +206,11 @@ if uploaded_files:
         "📁 Baza",
         "💯 L100R", "📉 CTR", "ROE (%)",
         "% Wykorzystane", "% Niewykorzystane", "🛒 Status bazy",
-        "🔁 % Ponowny kontakt", "🔁 % Ponowny kontakt (system)", "🔁 Śr. prób",
+        "🔁 % Ponowny kontakt (konsultant)", "🔁 % Ponowny kontakt (system)", "🔁 Śr. prób",
         "📋 Rekordów",
-        "🟦 Niewydzwonione (otwarte)", "🔁 Ponowny kontakt", "🔁 Ponowny kontakt (system)",
-        "🟧 Przełożony", "🤖 Zamkn. system", "👤 Zamkn. konsultant",
+        "🟦 Niewydzwonione (otwarte)", "🔁 Ponowny kontakt (konsultant)", "🔁 Ponowny kontakt (system)",
+        "🟧 Przełożony",
+        "🤖 Zamkn. system", "👤 Zamkn. konsultant",
         "❌ Brak tel. (CloseReason)",
         "📞 Połączeń", "✅ Spotkań",
         "📅 Ostatni kontakt", "🕓 Data importu", "⏳ Śr. czas reakcji (dni)",
@@ -246,8 +238,9 @@ if uploaded_files:
         else:
             rozklad, sr, med, okcnt = "", float("nan"), float("nan"), 0
 
-        pon_all = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontakt"]==True)]
-        pon_sys = df_all[(df_all["Baza"]==baza) & (df_all["PonownyKontaktSystem"]==True)]
+        # liczniki ponownych wg nowej logiki
+        pon_all = df_all[(df_all["Baza"]==baza) & (df_all["PonKontKonsultant"] | df_all["PonKontSystem"])]
+        pon_sys = df_all[(df_all["Baza"]==baza) & (df_all["PonKontSystem"])]
 
         rows.append({
             "📁 Baza": baza,
@@ -287,7 +280,10 @@ if uploaded_files:
             ws_p.set_column(i, i, 34)
 
         chart_sheet = wb.add_worksheet("Wykresy")
-        metrics = ["💯 L100R","📉 CTR","ROE (%)","% Wykorzystane","% Niewykorzystane","🔁 % Ponowny kontakt","🔁 % Ponowny kontakt (system)","🔁 Śr. prób"]
+        metrics = [
+            "💯 L100R","📉 CTR","ROE (%)","% Wykorzystane","% Niewykorzystane",
+            "🔁 % Ponowny kontakt (konsultant)","🔁 % Ponowny kontakt (system)","🔁 Śr. prób"
+        ]
         for i, m in enumerate(metrics):
             ch = wb.add_chart({'type':'column'})
             ch.add_series({
@@ -303,19 +299,19 @@ if uploaded_files:
 
         legenda = [
             ("💯 L100R","Spotkania na 100 rekordów."),
-            ("📉 CTR","Połączenia / umówienia – zawsze z realnych prób/umówień."),
+            ("📉 CTR","Połączenia / umówienia – zawsze liczone z realnych prób/umówień."),
             ("ROE (%)","% połączeń zakończonych umówieniem."),
             ("% Wykorzystane","100 - % niewykorzystanych; niewykorzystane = otwarte + wszystkie ponowne kontakty."),
-            ("% Niewykorzystane","Otwarte + wszystkie 'ponowny kontakt'."),
+            ("% Niewykorzystane","Otwarte + 'Ponowny kontakt (konsultant)' + 'Ponowny kontakt (system)'."),
             ("🛒 Status bazy","🟢 <70%, 🟡 70–89%, 🔴 ≥90%."),
-            ("🔁 % Ponowny kontakt","Odsetek rekordów z 'ponowny kontakt'."),
-            ("🔁 % Ponowny kontakt (system)","Odsetek rekordów z 'ponowny kontakt (system)'."),
+            ("🔁 % Ponowny kontakt (konsultant)","Odsetek rekordów z 'ponowny kontakt' z LCR/LCC (bez systemowych)."),
+            ("🔁 % Ponowny kontakt (system)","RecordState = 'Przełożony' i LastCallCode puste."),
             ("🔁 Śr. prób","Średnia prób per rekord."),
-            ("🟦 Niewydzwonione (otwarte)","RecordState = otwarty."),
-            ("🟧 Przełożony","Tylko RecordState = 'przelozony/przeozony' (bez 'ponowny kontakt (system)')."),
-            ("🤖 Zamkn. system","RecordState = 'zamkniety' AND DisconnectedCause = 'bledny numer'."),
-            ("👤 Zamkn. konsultant","LastCallReason ustawione i ≠ 'ponowny kontakt'."),
-            ("❌ Brak tel. (CloseReason)","CloseReason zawiera 'brak dostepnych telefon'."),
+            ("🟦 Niewydzwonione (otwarte)","RecordState zawiera 'otwart'."),
+            ("🟧 Przełożony","Suma: 'Ponowny kontakt (konsultant)' + 'Ponowny kontakt (system)'."),
+            ("🤖 Zamkn. system","RecordState = 'zamknięty' i CloseReason = 'Brak dostępnych telefonów' lub 'Błędne dane telefonów'."),
+            ("👤 Zamkn. konsultant","RecordState = 'zamknięty' i LastCallCode ≠ puste (z wykluczeniem Zamkn. system)."),
+            ("❌ Brak tel. (CloseReason)","CloseReason zawiera 'brak dostępnych telefon'."),
             ("🚨 Alert CTR","Kolor wg CTR tylko gdy wykorzystanie ≥40%; przy <40% → ⏳ Za wczesnie."),
             ("📝 Wniosek","Komentarz wg CTR/ROE/% wykorzystania.")
         ]
